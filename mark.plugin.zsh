@@ -1,0 +1,208 @@
+# mark.plugin.zsh
+# Directory bookmark system
+# Usage: mark <command> [args]
+
+MARKS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-mark"
+mkdir -p "$MARKS_DIR"
+
+# Preserve candidate ordering (disable zsh's default alphabetical sort)
+zstyle ':completion:*:*:mark:*' sort false
+
+# Levenshtein distance between two strings
+_mark_levenshtein() {
+  local s="$1" t="$2"
+  local -i slen=${#s} tlen=${#t} i j cost min
+  local -a prev curr
+
+  for (( j = 0; j <= tlen; j++ )); do prev[j+1]=$j; done
+
+  for (( i = 1; i <= slen; i++ )); do
+    curr=()
+    curr[1]=$i
+    for (( j = 1; j <= tlen; j++ )); do
+      if [[ "${s[i]}" == "${t[j]}" ]]; then cost=-2; else cost=1; fi
+      min=$(( prev[j+1] + 1 ))
+      (( curr[j] + 1 < min )) && min=$(( curr[j] + 1 ))
+      (( prev[j] + cost < min )) && min=$(( prev[j] + cost ))
+      curr[j+1]=$min
+    done
+    prev=("${curr[@]}")
+  done
+
+  echo "${prev[tlen+1]}"
+}
+
+# Returns 0 if query characters appear in order within name (not necessarily contiguous)
+_mark_is_subsequence() {
+  local query="$1" name="$2"
+  local -i qi=1 ni
+  for (( ni = 1; ni <= ${#name}; ni++ )); do
+    [[ "${name[ni]}" == "${query[qi]}" ]] && (( qi++ ))
+    (( qi > ${#query} )) && return 0
+  done
+  return 1
+}
+
+# Score for a candidate (lower = higher priority)
+# tier_offset + levenshtein_distance
+# Tiers: exact=0, substring=10000, subsequence=20000, other=30000
+_mark_score() {
+  local query="$1" name="$2"
+  local -i dist tier=30000
+  dist=$(_mark_levenshtein "$query" "$name")
+
+  if [[ "$query" == "$name" ]]; then
+    tier=0
+  elif [[ "$name" == *"$query"* ]]; then
+    tier=10000
+  elif _mark_is_subsequence "$query" "$name"; then
+    tier=20000
+  fi
+
+  echo $(( tier + dist ))
+}
+
+mark() {
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    add)
+      local name="${1:-$(basename "$PWD")}"
+      mkdir -p "$MARKS_DIR"
+      # -s: create a symbolic link, -f: overwrite if exists, -n: avoid creating inside a linked directory
+      if ln -sfn "$PWD" "$MARKS_DIR/$name"; then
+        echo "Marked '$PWD' as '$name'"
+      else
+        echo "Failed to create bookmark '$name'"
+        return 1
+      fi
+      ;;
+    go)
+      # -L: check if it is a symlink (the storage format for bookmarks)
+      local target="$MARKS_DIR/$1"
+      if [[ -L "$target" ]]; then
+        cd "$(readlink "$target")"
+      else
+        echo "No bookmark: $1"
+        return 1
+      fi
+      ;;
+    ls)
+      ls -la "$MARKS_DIR" | awk '/->/ {printf "%-20s -> %s\n", $9, $11}'
+      ;;
+    mv)
+      local old="$MARKS_DIR/$1"
+      local new="$MARKS_DIR/$2"
+      if [[ -z "$1" || -z "$2" ]]; then
+        echo "Usage: mark mv <old-name> <new-name>"
+        return 1
+      fi
+      if [[ ! -L "$old" ]]; then
+        echo "No bookmark: $1"
+        return 1
+      fi
+      if [[ -L "$new" ]]; then
+        echo "Bookmark already exists: $2"
+        return 1
+      fi
+      mv "$old" "$new"
+      echo "Renamed bookmark '$1' to '$2'"
+      ;;
+    rm)
+      local target="$MARKS_DIR/$1"
+      if [[ -L "$target" ]]; then
+        rm "$target"
+        echo "Removed bookmark '$1'"
+      else
+        echo "No bookmark: $1"
+        return 1
+      fi
+      ;;
+    help|"")
+      cat <<EOF
+Usage: mark <command> [args]
+
+Commands:
+  add [name]        Save current directory as a bookmark (default: current dir name)
+  go <name>         Jump to a bookmarked directory
+  ls                List all bookmarks
+  mv <old> <new>    Rename a bookmark
+  rm <name>         Remove a bookmark
+  help              Show this help message
+EOF
+      ;;
+    *)
+      echo "Unknown command: $cmd"
+      echo "Run 'mark help' for usage."
+      return 1
+      ;;
+  esac
+}
+
+# Tab completion
+_mark_complete() {
+  local -a subcommands
+  subcommands=(add go ls mv rm help)
+
+  if (( CURRENT == 2 )); then
+    _describe 'command' subcommands
+    return
+  fi
+
+  local subcmd="${words[2]}"
+  local query pos=0
+  [[ "$subcmd" == (go|rm) && $CURRENT == 3 ]] && pos=3
+  [[ "$subcmd" == "mv"    && $CURRENT == 3 ]] && pos=3
+  [[ "$subcmd" == "mv"    && $CURRENT == 4 ]] && pos=4
+
+  (( pos == 0 )) && return
+
+  query="${words[$pos]}"
+
+  # Score every bookmark and sort ascending
+  local -a pairs
+  for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
+    pairs+=("$(_mark_score "$query" "$bm"):$bm")
+  done
+
+  local -a sorted
+  sorted=($(printf '%s\n' "${pairs[@]}" | sort -t: -k1 -n))
+
+  local -a ordered
+  for pair in "${sorted[@]}"; do ordered+=("${pair#*:}"); done
+
+  # Calculate max name width for alignment
+  local -i max_len=0
+  for bm in "${ordered[@]}"; do
+    (( ${#bm} > max_len )) && max_len=${#bm}
+  done
+
+  local -a names descs
+  for bm in "${ordered[@]}"; do
+    names+=("$bm")
+    descs+=("$(printf "%-${max_len}s --> %s" "$bm" "$(readlink "$MARKS_DIR/$bm")")")
+  done
+
+  # -U: disable prefix filtering
+  # -V: unsorted group, preserves our priority ordering
+  compstate[insert]='menu'
+  compadd -U -V mark-bookmarks -l -d descs -a names
+}
+
+compdef _mark_complete mark
+
+# Trigger completion on down arrow when typing a mark command.
+# This is useful in terminals (e.g. Warp) that intercept Tab before zsh can
+# handle it: the down-arrow key press goes through zsh's line editor, so
+# calling expand-or-complete internally bypasses the terminal's Tab intercept.
+_mark_down_or_complete() {
+  if [[ "$BUFFER" =~ '^mark (go|rm|mv) ' ]]; then
+    zle expand-or-complete
+  else
+    zle down-line-or-history
+  fi
+}
+zle -N _mark_down_or_complete
+bindkey '^[[B' _mark_down_or_complete  # down arrow (standard)
+bindkey '\eOB' _mark_down_or_complete  # down arrow (application mode)
