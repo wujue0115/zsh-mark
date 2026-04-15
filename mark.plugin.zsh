@@ -222,6 +222,11 @@ _mark_complete() {
 
 compdef _mark_complete mark
 
+# In menu-selection mode, pressing Enter accepts the candidate and immediately
+# executes the command (instead of requiring a second Enter to run).
+zmodload zsh/complist
+bindkey -M menuselect '^M' accept-and-send
+
 # Trigger completion on down arrow when typing a mark command.
 # This is useful in terminals (e.g. Warp) that intercept Tab before zsh can
 # handle it: the down-arrow key press goes through zsh's line editor, so
