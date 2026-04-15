@@ -83,6 +83,12 @@ mark() {
       local target="$MARKS_DIR/$1"
       if [[ -L "$target" ]]; then
         cd "$(readlink "$target")"
+        echo "$1" >> "$MARKS_DIR/.history"
+        # Keep history file bounded to last 200 lines
+        if [[ $(wc -l < "$MARKS_DIR/.history") -gt 200 ]]; then
+          local tmp
+          tmp=$(tail -n 200 "$MARKS_DIR/.history") && echo "$tmp" > "$MARKS_DIR/.history"
+        fi
       else
         echo "No bookmark: $1"
         return 1
@@ -160,17 +166,41 @@ _mark_complete() {
 
   query="${words[$pos]}"
 
-  # Score every bookmark and sort ascending
-  local -a pairs
-  for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
-    pairs+=("$(_mark_score "$query" "$bm"):$bm")
-  done
-
-  local -a sorted
-  sorted=($(printf '%s\n' "${pairs[@]}" | sort -t: -k1 -n))
-
   local -a ordered
-  for pair in "${sorted[@]}"; do ordered+=("${pair#*:}"); done
+
+  # When no query is given for 'go', show recently used marks first
+  if [[ "$subcmd" == "go" && -z "$query" && -f "$MARKS_DIR/.history" ]]; then
+    local -a history_lines
+    local -A seen_map
+    while IFS= read -r line; do
+      history_lines+=("$line")
+    done < "$MARKS_DIR/.history"
+    # Iterate in reverse (most recent first), deduplicate, skip deleted marks
+    for (( i = ${#history_lines[@]}; i >= 1; i-- )); do
+      local bm="${history_lines[$i]}"
+      if [[ -L "$MARKS_DIR/$bm" && -z "${seen_map[$bm]}" ]]; then
+        ordered+=("$bm")
+        seen_map[$bm]=1
+      fi
+    done
+    # Append any bookmarks not yet in recent history
+    for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
+      [[ "$bm" == ".history" ]] && continue
+      [[ -z "${seen_map[$bm]}" ]] && ordered+=("$bm")
+    done
+  else
+    # Score every bookmark and sort ascending
+    local -a pairs
+    for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
+      [[ "$bm" == ".history" ]] && continue
+      pairs+=("$(_mark_score "$query" "$bm"):$bm")
+    done
+
+    local -a sorted
+    sorted=($(printf '%s\n' "${pairs[@]}" | sort -t: -k1 -n))
+
+    for pair in "${sorted[@]}"; do ordered+=("${pair#*:}"); done
+  fi
 
   # Calculate max name width for alignment
   local -i max_len=0
