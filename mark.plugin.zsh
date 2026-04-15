@@ -62,6 +62,14 @@ _mark_score() {
   echo $(( tier + dist ))
 }
 
+_mark_validate_name() {
+  local name="$1"
+  if [[ -z "$name" || "$name" == */* || "$name" == "." || "$name" == ".." || "$name" == ".history" ]]; then
+    echo "Invalid bookmark name: '$name'"
+    return 1
+  fi
+}
+
 mark() {
   local cmd="$1"
   shift
@@ -69,6 +77,7 @@ mark() {
   case "$cmd" in
     add)
       local name="${1:-$(basename "$PWD")}"
+      _mark_validate_name "$name" || return 1
       mkdir -p "$MARKS_DIR"
       # -s: create a symbolic link, -f: overwrite if exists, -n: avoid creating inside a linked directory
       if ln -sfn "$PWD" "$MARKS_DIR/$name"; then
@@ -104,6 +113,8 @@ mark() {
         echo "Usage: mark mv <old-name> <new-name>"
         return 1
       fi
+      _mark_validate_name "$1" || return 1
+      _mark_validate_name "$2" || return 1
       if [[ ! -L "$old" ]]; then
         echo "No bookmark: $1"
         return 1
