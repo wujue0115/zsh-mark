@@ -1,0 +1,97 @@
+.TH MARK 1 "2026-04-15" "zsh-mark" "User Commands"
+.SH NAME
+mark \- directory bookmark system for zsh
+.SH SYNOPSIS
+.B mark
+.I command
+.RI [ args ]
+.SH DESCRIPTION
+.B mark
+is a zsh plugin that lets you save, navigate, and manage directory bookmarks.
+Bookmarks are stored as symlinks under
+.IR ~/.local/share/zsh-mark/ " (or " $XDG_DATA_HOME/zsh-mark ).
+.SH COMMANDS
+.TP
+.B add\fR [\fIname\fR]
+Save the current directory as a bookmark.
+If
+.I name
+is omitted, the current directory's basename is used.
+.TP
+.B go\fR \fIname\fR
+Change to the directory associated with the bookmark
+.IR name .
+.TP
+.B ls
+List all bookmarks and their target paths.
+.TP
+.B mv\fR \fIold\fR \fInew\fR
+Rename bookmark
+.I old
+to
+.IR new .
+Fails if
+.I old
+does not exist or
+.I new
+already exists.
+.TP
+.B rm\fR \fIname\fR
+Remove the bookmark
+.IR name .
+The target directory itself is not affected.
+.TP
+.B help
+Show a brief usage summary.
+.SH TAB COMPLETION
+The
+.BR go ", " rm ", and " mv
+subcommands support tab completion (triggered by
+.B Tab
+or
+.BR \(da ).
+Candidates are ranked by match quality:
+.PP
+.RS
+.TS
+l l.
+1st	Exact match
+2nd	Query is a substring of the bookmark name
+3rd	Query characters appear in order (subsequence)
+4th	Everything else
+.TE
+.RE
+.PP
+Within each tier, results are further ranked by Levenshtein distance.
+Each candidate also shows its target path.
+.SH FILES
+.TP
+.I ~/.local/share/zsh-mark/
+Default bookmark storage directory (symlinks).
+Override by setting
+.B $XDG_DATA_HOME
+before sourcing the plugin.
+.SH EXAMPLES
+.TP
+Save the current directory as \(lqwork\(rq:
+.B mark add work
+.TP
+Jump to the \(lqwork\(rq bookmark:
+.B mark go work
+.TP
+List all bookmarks:
+.B mark ls
+.TP
+Rename \(lqwork\(rq to \(lqproject\(rq:
+.B mark mv work project
+.TP
+Remove the \(lqwork\(rq bookmark:
+.B mark rm work
+.SH SEE ALSO
+.BR zsh (1),
+.BR ln (1),
+.BR readlink (1)
+.SH AUTHORS
+Maintained at
+.UR https://github.com/wujue0115/zsh-mark
+.UE .

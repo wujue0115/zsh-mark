@@ -3,6 +3,7 @@
 INSTALL_DIR="${HOME}/.zsh-mark"
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 PLUGIN_LINE="source \"$INSTALL_DIR/mark.plugin.zsh\""
+MAN_PAGE="${HOME}/.local/share/man/man1/mark.1"
 
 echo "Uninstalling zsh-mark..."
 
@@ -10,6 +11,15 @@ echo "Uninstalling zsh-mark..."
 if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$INSTALL_DIR"
   echo "Removed $INSTALL_DIR"
+fi
+
+# Remove man page
+if [[ -f "$MAN_PAGE" ]]; then
+  rm -f "$MAN_PAGE"
+  if command -v mandb &>/dev/null; then
+    mandb -q 2>/dev/null || true
+  fi
+  echo "Removed man page"
 fi
 
 # Remove source line from .zshrc
