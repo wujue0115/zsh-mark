@@ -3,7 +3,15 @@
 # Usage: mark <command> [args]
 
 MARKS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/zsh-mark"
+MARKS_FILE="$MARKS_DIR/bookmarks"
 mkdir -p "$MARKS_DIR"
+
+# Resolve external tools at load time so subshells inherit the correct full path
+# regardless of how PATH is configured in the user's environment.
+: ${_mark_awk:=${commands[awk]:-$_mark_awk}}
+: ${_mark_wc:=${commands[wc]:-/usr/bin/wc}}
+: ${_mark_tail:=${commands[tail]:-/usr/bin/tail}}
+: ${_mark_sort:=${commands[sort]:-/usr/bin/sort}}
 
 # Preserve candidate ordering (disable zsh's default alphabetical sort)
 zstyle ':completion:*:*:mark:*' sort false
@@ -62,6 +70,35 @@ _mark_score() {
   echo $(( tier + dist ))
 }
 
+# Look up the path for a bookmark name. Prints the path on success, exits 1 if not found.
+_mark_lookup() {
+  local name="$1"
+  [[ ! -f "$MARKS_FILE" ]] && return 1
+  $_mark_awk -v name="$name" 'BEGIN{found=0} {
+    if (substr($0, 1, length(name)+1) == name "=") {
+      print substr($0, length(name)+2)
+      found=1
+      exit
+    }
+  } END{ exit !found }' "$MARKS_FILE"
+}
+
+# Returns 0 if a bookmark with the given name exists.
+_mark_name_exists() {
+  [[ ! -f "$MARKS_FILE" ]] && return 1
+  $_mark_awk -v name="$1" 'BEGIN{found=0} {
+    if (substr($0, 1, length(name)+1) == name "=") { found=1; exit }
+  } END{ exit !found }' "$MARKS_FILE"
+}
+
+# Remove an entry by name from the bookmarks file in-place via a temp file.
+_mark_remove_entry() {
+  local name="$1"
+  $_mark_awk -v name="$name" '{
+    if (substr($0, 1, length(name)+1) != name "=") print
+  }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE"
+}
+
 mark() {
   local cmd="$1"
   shift
@@ -70,60 +107,60 @@ mark() {
     add)
       local name="${1:-$(basename "$PWD")}"
       mkdir -p "$MARKS_DIR"
-      # -s: create a symbolic link, -f: overwrite if exists, -n: avoid creating inside a linked directory
-      if ln -sfn "$PWD" "$MARKS_DIR/$name"; then
-        echo "Marked '$PWD' as '$name'"
-      else
-        echo "Failed to create bookmark '$name'"
-        return 1
-      fi
+      touch "$MARKS_FILE"
+      _mark_remove_entry "$name"
+      echo "${name}=${PWD}" >> "$MARKS_FILE"
+      echo "Marked '$PWD' as '$name'"
       ;;
     go)
-      # -L: check if it is a symlink (the storage format for bookmarks)
-      local target="$MARKS_DIR/$1"
-      if [[ -L "$target" ]]; then
-        cd "$(readlink "$target")"
-        echo "$1" >> "$MARKS_DIR/.history"
-        # Keep history file bounded to last 200 lines
-        if [[ $(wc -l < "$MARKS_DIR/.history") -gt 200 ]]; then
-          local tmp
-          tmp=$(tail -n 200 "$MARKS_DIR/.history") && echo "$tmp" > "$MARKS_DIR/.history"
-        fi
-      else
-        echo "No bookmark: $1"
-        return 1
+      local path
+      path=$(_mark_lookup "$1") || { echo "No bookmark: $1"; return 1; }
+      cd "$path"
+      echo "$1" >> "$MARKS_DIR/.history"
+      # Keep history file bounded to last 200 lines
+      if [[ $($_mark_wc -l < "$MARKS_DIR/.history") -gt 200 ]]; then
+        local tmp
+        tmp=$($_mark_tail -n 200 "$MARKS_DIR/.history") && echo "$tmp" > "$MARKS_DIR/.history"
       fi
       ;;
     ls)
-      ls -la "$MARKS_DIR" | awk '/->/ {printf "%-20s -> %s\n", $9, $11}'
+      [[ ! -f "$MARKS_FILE" ]] && return 0
+      $_mark_awk '{
+        name = $0; sub(/=.*/, "", name)
+        path = substr($0, length(name)+2)
+        printf "%-20s -> %s\n", name, path
+      }' "$MARKS_FILE"
       ;;
     mv)
-      local old="$MARKS_DIR/$1"
-      local new="$MARKS_DIR/$2"
       if [[ -z "$1" || -z "$2" ]]; then
         echo "Usage: mark mv <old-name> <new-name>"
         return 1
       fi
-      if [[ ! -L "$old" ]]; then
+      if ! _mark_name_exists "$1"; then
         echo "No bookmark: $1"
         return 1
       fi
-      if [[ -L "$new" ]]; then
+      if _mark_name_exists "$2"; then
         echo "Bookmark already exists: $2"
         return 1
       fi
-      mv "$old" "$new"
-      echo "Renamed bookmark '$1' to '$2'"
+      local old="$1" new="$2"
+      $_mark_awk -v old="$old" -v new="$new" '{
+        if (substr($0, 1, length(old)+1) == old "=") {
+          print new "=" substr($0, length(old)+2)
+        } else {
+          print
+        }
+      }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE"
+      echo "Renamed bookmark '$old' to '$new'"
       ;;
     rm)
-      local target="$MARKS_DIR/$1"
-      if [[ -L "$target" ]]; then
-        rm "$target"
-        echo "Removed bookmark '$1'"
-      else
+      if ! _mark_name_exists "$1"; then
         echo "No bookmark: $1"
         return 1
       fi
+      _mark_remove_entry "$1"
+      echo "Removed bookmark '$1'"
       ;;
     help|"")
       cat <<EOF
@@ -166,6 +203,17 @@ _mark_complete() {
 
   query="${words[$pos]}"
 
+  # Load all bookmarks into an associative array (name -> path) and an ordered list
+  local -A mark_paths
+  local -a all_marks
+  if [[ -f "$MARKS_FILE" ]]; then
+    while IFS= read -r line; do
+      local bm="${line%%=*}"
+      mark_paths[$bm]="${line#*=}"
+      all_marks+=("$bm")
+    done < "$MARKS_FILE"
+  fi
+
   local -a ordered
 
   # When no query is given for 'go', show recently used marks first
@@ -178,26 +226,24 @@ _mark_complete() {
     # Iterate in reverse (most recent first), deduplicate, skip deleted marks
     for (( i = ${#history_lines[@]}; i >= 1; i-- )); do
       local bm="${history_lines[$i]}"
-      if [[ -L "$MARKS_DIR/$bm" && -z "${seen_map[$bm]}" ]]; then
+      if [[ -n "${mark_paths[$bm]}" && -z "${seen_map[$bm]}" ]]; then
         ordered+=("$bm")
         seen_map[$bm]=1
       fi
     done
     # Append any bookmarks not yet in recent history
-    for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
-      [[ "$bm" == ".history" ]] && continue
+    for bm in "${all_marks[@]}"; do
       [[ -z "${seen_map[$bm]}" ]] && ordered+=("$bm")
     done
   else
     # Score every bookmark and sort ascending
     local -a pairs
-    for bm in $(ls "$MARKS_DIR" 2>/dev/null); do
-      [[ "$bm" == ".history" ]] && continue
+    for bm in "${all_marks[@]}"; do
       pairs+=("$(_mark_score "$query" "$bm"):$bm")
     done
 
     local -a sorted
-    sorted=($(printf '%s\n' "${pairs[@]}" | sort -t: -k1 -n))
+    sorted=($(printf '%s\n' "${pairs[@]}" | $_mark_sort -t: -k1 -n))
 
     for pair in "${sorted[@]}"; do ordered+=("${pair#*:}"); done
   fi
@@ -211,7 +257,7 @@ _mark_complete() {
   local -a names descs
   for bm in "${ordered[@]}"; do
     names+=("$bm")
-    descs+=("$(printf "%-${max_len}s --> %s" "$bm" "$(readlink "$MARKS_DIR/$bm")")")
+    descs+=("$(printf "%-${max_len}s --> %s" "$bm" "${mark_paths[$bm]}")")
   done
 
   # -U: disable prefix filtering
