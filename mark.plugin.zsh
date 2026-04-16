@@ -8,7 +8,7 @@ mkdir -p "$MARKS_DIR"
 
 # Resolve external tools at load time so subshells inherit the correct full path
 # regardless of how PATH is configured in the user's environment.
-: ${_mark_awk:=${commands[awk]:-$_mark_awk}}
+: ${_mark_awk:=${commands[awk]:-/usr/bin/awk}}
 : ${_mark_wc:=${commands[wc]:-/usr/bin/wc}}
 : ${_mark_tail:=${commands[tail]:-/usr/bin/tail}}
 : ${_mark_sort:=${commands[sort]:-/usr/bin/sort}}
@@ -96,7 +96,20 @@ _mark_remove_entry() {
   local name="$1"
   $_mark_awk -v name="$name" '{
     if (substr($0, 1, length(name)+1) != name "=") print
-  }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE"
+  }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE" || rm -f "${MARKS_FILE}.tmp"
+}
+
+# Returns 1 if name is empty or contains '=', which would corrupt the bookmarks file format.
+_mark_validate_name() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "Invalid bookmark name: name cannot be empty"
+    return 1
+  fi
+  if [[ "$name" == *=* ]]; then
+    echo "Invalid bookmark name: '$name' (cannot contain '=')"
+    return 1
+  fi
 }
 
 mark() {
@@ -106,13 +119,18 @@ mark() {
   case "$cmd" in
     add)
       local name="${1:-$(basename "$PWD")}"
+      _mark_validate_name "$name" || return 1
       mkdir -p "$MARKS_DIR"
       touch "$MARKS_FILE"
-      _mark_remove_entry "$name"
+      if _mark_name_exists "$name"; then
+        echo "Bookmark already exists: '$name'"
+        return 1
+      fi
       echo "${name}=${PWD}" >> "$MARKS_FILE"
       echo "Marked '$PWD' as '$name'"
       ;;
     go)
+      [[ -z "$1" ]] && { echo "Usage: mark go <name>"; return 1; }
       local path
       path=$(_mark_lookup "$1") || { echo "No bookmark: $1"; return 1; }
       cd "$path"
@@ -136,6 +154,8 @@ mark() {
         echo "Usage: mark mv <old-name> <new-name>"
         return 1
       fi
+      _mark_validate_name "$1" || return 1
+      _mark_validate_name "$2" || return 1
       if ! _mark_name_exists "$1"; then
         echo "No bookmark: $1"
         return 1
@@ -151,7 +171,7 @@ mark() {
         } else {
           print
         }
-      }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE"
+      }' "$MARKS_FILE" > "${MARKS_FILE}.tmp" && mv "${MARKS_FILE}.tmp" "$MARKS_FILE" || rm -f "${MARKS_FILE}.tmp"
       echo "Renamed bookmark '$old' to '$new'"
       ;;
     rm)
